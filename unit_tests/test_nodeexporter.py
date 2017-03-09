@@ -51,11 +51,13 @@ class JujuReactiveControl:
         application = unit_name.split("/", 1)[0]
         unit = self.applications[application][unit_name]
         assert unit["state"] == "deployed"
-        os.environ["JUJU_HOOK_NAME"] = "install"
-        charms.reactive.main()
-        os.environ["JUJU_HOOK_NAME"] = "start"
-        charms.reactive.main()
+        self.run_hook("install")
+        self.run_hook("start")
         unit["state"] = "started"
+
+    def run_hook(self, name):
+        os.environ["JUJU_HOOK_NAME"] = name
+        charms.reactive.main()
 
 
 class FooTest(CharmTest):
