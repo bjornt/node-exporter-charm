@@ -2,6 +2,8 @@ import argparse
 import io
 import os
 
+import yaml
+
 from charms.layer import basic
 import charms.reactive
 from charms.reactive.helpers import data_changed
@@ -39,25 +41,74 @@ class ResourceGet:
 
 class JujuReactiveControl:
 
-    def __init__(self):
+    def __init__(self, charm_dir, unit_name):
+        with open(os.path.join(charm_dir, "metadata.yaml"), "r") as meta_file:
+            self.meta = yaml.safe_load(meta_file.read())
+        self.unit_name = unit_name
+        self.application = unit_name.split("/", 1)[0]
         self.applications = {}
+        self.local_unit = self.deploy(
+            self.application, subordinate=self.meta.get("subordinate", False))
+        self.relations = {}
 
-    def deploy(self, unit_name):
-        application = unit_name.split("/", 1)[0]
-        unit_info = {"state": "deployed"}
-        self.applications.setdefault(application, {})[unit_name] = unit_info
+    def deploy(self, application, subordinate=False):
+        unit_info = {
+            "state": "deployed", "subordinate": subordinate,
+            "application": application}
+        self.applications.setdefault(application, []).append(unit_info)
+        return unit_info
 
-    def start(self, unit_name):
-        application = unit_name.split("/", 1)[0]
-        unit = self.applications[application][unit_name]
-        assert unit["state"] == "deployed"
-        self.run_hook("install")
-        self.run_hook("start")
-        unit["state"] = "started"
+    def start(self, application):
+        unit = self.applications[application][0]
+        assert not unit["subordinate"], (
+            "Can't manually start subordinate units.")
+        self._transition_unit(unit, "started")
+
+    def relate(self, relation_name, application):
+        for relation_type in ["provides", "requires"]:
+            defined_relations = self.meta.get(relation_type, {})
+            if relation_name in defined_relations:
+                relation = dict(defined_relations[relation_name])
+                break
+        else:
+            raise AssertionError("No such relation defined: " + relation_name)
+        relation["state"] = "waiting"
+        relation["name"] = relation_name
+        relation["application"] = application
+        self.relations[relation_name] = relation
+        self._check_relations()
 
     def run_hook(self, name):
         os.environ["JUJU_HOOK_NAME"] = name
         charms.reactive.main()
+
+    def _check_relations(self):
+        for relation_name, relation in self.relations.items():
+            if relation["state"] != "waiting":
+                continue
+            if relation["application"] not in self.applications:
+                continue
+            remote_unit = self.applications[relation["application"]][0]
+            if relation.get("scope") == "container":
+                if (self.local_unit["state"] == "deployed" and
+                        remote_unit["state"] == "started"):
+                    self._transition_unit(self.local_unit, "started")
+                    self._transition_relation(relation, "joined")
+                    self.run_hook(relation_name + "-joined")
+                    self.run_hook(relation_name + "-changed")
+
+    def _transition_unit(self, unit, state):
+        if state == "started" and unit["state"] == "deployed":
+            if unit["application"] == self.application:
+                self.run_hook("install")
+                self.run_hook("start")
+        unit["state"] = state
+        self._check_relations()
+
+    def _transition_relation(self, relation, state):
+        if state == "joined" and relation["state"] == "waiting":
+            self.run_hook(relation["name"] + "-joined")
+            self.run_hook(relation["name"] + "-changed")
 
 
 class FooTest(CharmTest):
@@ -79,7 +130,8 @@ class FooTest(CharmTest):
         self.resource_get = ResourceGet()
         self.fakes.processes.add(self.resource_get)
 
-        self.fakes.juju.control = JujuReactiveControl()
+        self.fakes.juju.control = JujuReactiveControl(
+            os.environ["CHARM_DIR"], os.environ["JUJU_UNIT_NAME"])
 
     def _init_reactive(self):
         basic.init_config_states()
@@ -97,7 +149,8 @@ class FooTest(CharmTest):
         self.fakes.processes.add(self.snap)
 
     def test_install_snap(self):
-        self.fakes.juju.control.deploy("prometheus-node-exporter")
-        self.fakes.juju.control.start("prometheus-node-exporter")
+        self.fakes.juju.control.deploy("some-service")
+        self.fakes.juju.control.relate("container", "some-service")
+        self.fakes.juju.control.start("some-service")
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
