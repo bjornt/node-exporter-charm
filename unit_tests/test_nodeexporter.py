@@ -1,6 +1,8 @@
 import argparse
+import shutil
 import io
 import os
+import sys
 
 import yaml
 
@@ -8,7 +10,7 @@ from charms.layer import basic
 import charms.reactive
 from charms.reactive.helpers import data_changed
 
-from charmhelpers.core import hookenv
+from charmhelpers.core import hookenv, unitdata
 from charmtest import CharmTest
 
 
@@ -119,6 +121,11 @@ class FooTest(CharmTest):
         self._init_snap_layer()
         self._init_fake_juju()
 
+    def _clean_up_unitdata(self):
+        unitdata.kv().close
+        unitdata._KV = None
+        delattr(charms.reactive, "_snap_registered")
+
     def _init_fake_juju(self):
         tools_dir = "/var/lib/juju/tools/machine-0"
         os.makedirs(tools_dir)
@@ -132,12 +139,18 @@ class FooTest(CharmTest):
 
         self.fakes.juju.control = JujuReactiveControl(
             os.environ["CHARM_DIR"], os.environ["JUJU_UNIT_NAME"])
+        self.addCleanup(self._clean_up_unitdata)
 
     def _init_reactive(self):
+        self.loaded_modules = set(sys.modules.keys())
         basic.init_config_states()
         code_dir = os.getcwd()
         charm_dir = hookenv.charm_dir()
-        for sub_path in ["reactive", "layer.yaml"]:
+        shutil.copytree(
+            os.path.join(code_dir, "reactive"), 
+            os.path.join(
+                self.fakes.fs.root.path, charm_dir.lstrip("/"), "reactive"))
+        for sub_path in ["layer.yaml"]:
             source = os.path.join(code_dir, sub_path)
             target = os.path.join(charm_dir, sub_path)
             os.symlink(source, target)
