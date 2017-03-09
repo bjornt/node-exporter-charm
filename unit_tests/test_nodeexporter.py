@@ -37,6 +37,27 @@ class ResourceGet:
         return {"stdout": io.BytesIO(b"")}
 
 
+class JujuReactiveControl:
+
+    def __init__(self):
+        self.applications = {}
+
+    def deploy(self, unit_name):
+        application = unit_name.split("/", 1)[0]
+        unit_info = {"state": "deployed"}
+        self.applications.setdefault(application, {})[unit_name] = unit_info
+
+    def start(self, unit_name):
+        application = unit_name.split("/", 1)[0]
+        unit = self.applications[application][unit_name]
+        assert unit["state"] == "deployed"
+        os.environ["JUJU_HOOK_NAME"] = "install"
+        charms.reactive.main()
+        os.environ["JUJU_HOOK_NAME"] = "start"
+        charms.reactive.main()
+        unit["state"] = "started"
+
+
 class FooTest(CharmTest):
 
     def setUp(self):
@@ -56,6 +77,8 @@ class FooTest(CharmTest):
         self.resource_get = ResourceGet()
         self.fakes.processes.add(self.resource_get)
 
+        self.fakes.juju.control = JujuReactiveControl()
+
     def _init_reactive(self):
         basic.init_config_states()
         code_dir = os.getcwd()
@@ -72,7 +95,7 @@ class FooTest(CharmTest):
         self.fakes.processes.add(self.snap)
 
     def test_install_snap(self):
-        os.environ["JUJU_HOOK_NAME"] = "install"
-        charms.reactive.main()
+        self.fakes.juju.control.deploy("prometheus-node-exporter")
+        self.fakes.juju.control.start("prometheus-node-exporter")
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
