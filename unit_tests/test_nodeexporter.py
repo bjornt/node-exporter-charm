@@ -159,7 +159,7 @@ class RelationGet:
         return {"stdout": io.BytesIO(value.encode("utf-8"))}
 
 
-class JujuReactiveControl:
+class JujuReactiveModel:
 
     def __init__(self, charm_dir, unit_name):
         with open(os.path.join(charm_dir, "metadata.yaml"), "r") as meta_file:
@@ -275,18 +275,18 @@ class FooTest(CharmTest):
         self.resource_get = ResourceGet()
         self.fakes.processes.add(self.resource_get)
 
-        self.fakes.juju.control = JujuReactiveControl(
+        self.fakes.juju.model = JujuReactiveModel(
             os.environ["CHARM_DIR"], os.environ["JUJU_UNIT_NAME"])
         self.addCleanup(self._clean_up_unitdata)
-        unit_get = UnitGet(self.fakes.juju.control.local_unit["data"])
+        unit_get = UnitGet(self.fakes.juju.model.local_unit["data"])
         self.fakes.processes.add(unit_get)
-        relation_ids = RelationIds(self.fakes.juju.control.relations)
+        relation_ids = RelationIds(self.fakes.juju.model.relations)
         self.fakes.processes.add(relation_ids)
-        relation_list = RelationList(self.fakes.juju.control.relations)
+        relation_list = RelationList(self.fakes.juju.model.relations)
         self.fakes.processes.add(relation_list)
-        relation_get = RelationGet(self.fakes.juju.control.relations)
+        relation_get = RelationGet(self.fakes.juju.model.relations)
         self.fakes.processes.add(relation_get)
-        relation_set = RelationSet(self.fakes.juju.control.relations)
+        relation_set = RelationSet(self.fakes.juju.model.relations)
         self.fakes.processes.add(relation_set)
 
     def _init_reactive(self):
@@ -317,24 +317,25 @@ class FooTest(CharmTest):
         self.fakes.processes.add(self.snap)
 
     def test_install_snap(self):
-        self.fakes.juju.control.deploy(["some-service"])
-        self.fakes.juju.control.relate("container", "some-service")
+        self.fakes.juju.model.deploy(["some-service"])
+        self.fakes.juju.model.relate("container", "some-service")
 
-        self.fakes.juju.control.start("some-service")
+        self.fakes.juju.model.start("some-service")
 
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
 
     def test_relate_prometheus(self):
-        self.fakes.juju.control.deploy(["some-service", "prometheus"])
-        self.fakes.juju.control.relate("container", "some-service")
-        self.fakes.juju.control.relate("prometheus-client", "prometheus")
+        self.fakes.juju.model.deploy(["some-service", "prometheus"])
+        self.fakes.juju.model.relate("container", "some-service")
+        self.fakes.juju.model.relate("prometheus-client", "prometheus")
 
-        self.fakes.juju.control.start("some-service")
-        self.fakes.juju.control.start("prometheus")
+        self.fakes.juju.model.start("some-service")
+        self.fakes.juju.model.start("prometheus")
 
-        relation = self.fakes.juju.control.relations["prometheus-client"]
-        unit_data = self.fakes.juju.control.local_unit["data"]
+        relation = self.fakes.juju.model.relations["prometheus-client"]
+        unit_data = self.fakes.juju.model.local_unit["data"]
+
         self.assertEqual("9100", relation["data"]["port"])
         self.assertEqual(
             unit_data["private-address"], relation["data"]["hostname"])
