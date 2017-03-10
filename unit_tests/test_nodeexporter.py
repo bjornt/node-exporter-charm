@@ -85,6 +85,28 @@ class RelationIds:
         return {"stdout": io.BytesIO(value.encode("utf-8"))}
 
 
+class RelationList:
+
+    name = "relation-list"
+
+    def __init__(self, relations):
+        self.relations = relations
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-r", "--relation")
+        parser.add_argument("--format", nargs="?", default="yaml")
+        args = parser.parse_args(proc_args["args"][1:])
+        for relation in self.relations.values():
+            if relation["id"] == args.relation:
+                break
+        else:
+            raise AssertionError("invalid relation id")
+        converter = json.dumps if args.format == "json" else yaml.dump
+        value = converter(list(relation["units"].keys()))
+        return {"stdout": io.BytesIO(value.encode("utf-8"))}
+
+
 class RelationSet:
 
     name = "relation-set"
@@ -111,6 +133,32 @@ class RelationSet:
         return {}
 
 
+class RelationGet:
+
+    name = "relation-get"
+
+    def __init__(self, relations):
+        self.relations = relations
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("key")
+        parser.add_argument("unit")
+        parser.add_argument("-r", "--relation")
+        parser.add_argument("--format", nargs="?", default="yaml")
+        args = parser.parse_args(proc_args["args"][1:])
+        for relation in self.relations.values():
+            if relation["id"] == args.relation:
+                break
+        else:
+            raise AssertionError("invalid relation id")
+        data = relation["units"][args.unit]
+        value = data if args.key == "-" else data[args.key]
+        converter = json.dumps if args.format == "json" else yaml.dump
+        value = converter(value)
+        return {"stdout": io.BytesIO(value.encode("utf-8"))}
+
+
 class JujuReactiveControl:
 
     def __init__(self, charm_dir, unit_name):
@@ -127,7 +175,7 @@ class JujuReactiveControl:
     def deploy(self, application, subordinate=False):
         unit_info = {
             "state": "deployed", "subordinate": subordinate,
-            "application": application}
+            "application": application, "name": application + "/0"}
         self.applications.setdefault(application, []).append(unit_info)
         return unit_info
 
@@ -147,6 +195,7 @@ class JujuReactiveControl:
             raise AssertionError("No such relation defined: " + relation_name)
         relation["id"] = relation_name + ":1"
         relation["data"] = {}
+        relation["units"] = {}
         relation["state"] = "waiting"
         relation["name"] = relation_name
         relation["application"] = application
@@ -178,11 +227,11 @@ class JujuReactiveControl:
                 if (self.local_unit["state"] == "deployed" and
                         remote_unit["state"] == "started"):
                     self._transition_unit(self.local_unit, "started")
-                    self._transition_relation(relation, "joined")
+                    self._transition_relation(relation, "joined", remote_unit)
             else:
                 if (self.local_unit["state"] == "started" and
                         remote_unit["state"] == "started"):
-                    self._transition_relation(relation, "joined")
+                    self._transition_relation(relation, "joined", remote_unit)
 
     def _transition_unit(self, unit, state):
         if state == "started" and unit["state"] == "deployed":
@@ -192,11 +241,12 @@ class JujuReactiveControl:
         unit["state"] = state
         self._check_relations()
 
-    def _transition_relation(self, relation, state):
+    def _transition_relation(self, relation, state, remote_unit):
         if state == "joined" and relation["state"] == "waiting":
             self.run_hook(relation["name"] + "-relation-joined")
             self.run_hook(relation["name"] + "-relation-changed")
             relation["state"] = "joined"
+            relation["units"][remote_unit["name"]] = {}
 
 
 class FooTest(CharmTest):
@@ -230,6 +280,10 @@ class FooTest(CharmTest):
         self.fakes.processes.add(unit_get)
         relation_ids = RelationIds(self.fakes.juju.control.relations)
         self.fakes.processes.add(relation_ids)
+        relation_list = RelationList(self.fakes.juju.control.relations)
+        self.fakes.processes.add(relation_list)
+        relation_get = RelationGet(self.fakes.juju.control.relations)
+        self.fakes.processes.add(relation_get)
         relation_set = RelationSet(self.fakes.juju.control.relations)
         self.fakes.processes.add(relation_set)
 
