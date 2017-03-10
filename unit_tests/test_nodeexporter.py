@@ -329,20 +329,20 @@ class FooTest(CharmTest):
         self.fakes.processes.add(self.snap)
 
     def test_install_snap(self):
-        self.fakes.juju.model.deploy(["some-service"])
-        self.fakes.juju.model.relate("container", "some-service")
+        self.fakes.juju.model.deploy(["mysql"])
+        self.fakes.juju.model.relate("container", "mysql")
 
-        self.fakes.juju.model.start("some-service")
+        self.fakes.juju.model.start("mysql")
 
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
 
     def test_relate_prometheus(self):
-        self.fakes.juju.model.deploy(["some-service", "prometheus"])
-        self.fakes.juju.model.relate("container", "some-service")
+        self.fakes.juju.model.deploy(["mysql", "prometheus"])
+        self.fakes.juju.model.relate("container", "mysql")
         self.fakes.juju.model.relate("prometheus-client", "prometheus")
 
-        self.fakes.juju.model.start("some-service")
+        self.fakes.juju.model.start("mysql")
         self.fakes.juju.model.start("prometheus")
 
         [relation] = self.fakes.juju.model.relations["prometheus-client"]
@@ -354,16 +354,16 @@ class FooTest(CharmTest):
         self.assertEqual(
             unit_data["private-address"], relation["data"]["private-address"])
         self.assertEqual(
-            "some-service/0", relation["data"]["principal-unit"])
+            "mysql/0", relation["data"]["principal-unit"])
 
     def test_relate_prometheus_multiple(self):
         self.fakes.juju.model.deploy(
-            ["some-service", "prometheus1", "prometheus2"])
-        self.fakes.juju.model.relate("container", "some-service")
+            ["mysql", "prometheus1", "prometheus2"])
+        self.fakes.juju.model.relate("container", "mysql")
         self.fakes.juju.model.relate("prometheus-client", "prometheus1")
         self.fakes.juju.model.relate("prometheus-client", "prometheus2")
 
-        self.fakes.juju.model.start("some-service")
+        self.fakes.juju.model.start("mysql")
         self.fakes.juju.model.start("prometheus1")
         self.fakes.juju.model.start("prometheus2")
 
@@ -371,7 +371,7 @@ class FooTest(CharmTest):
             "prometheus-client"]
         self.assertEqual("9100", relation1["data"]["port"])
         self.assertEqual(
-            "some-service/0", relation1["data"]["principal-unit"])
+            "mysql/0", relation1["data"]["principal-unit"])
         self.assertEqual("9100", relation2["data"]["port"])
         self.assertEqual(
-            "some-service/0", relation2["data"]["principal-unit"])
+            "mysql/0", relation2["data"]["principal-unit"])
