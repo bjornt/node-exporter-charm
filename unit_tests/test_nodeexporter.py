@@ -1,5 +1,6 @@
 import argparse
 import io
+import itertools
 import json
 import os
 import shutil
@@ -76,10 +77,10 @@ class RelationIds:
         parser.add_argument("name")
         parser.add_argument("--format", nargs="?", default="yaml")
         args = parser.parse_args(proc_args["args"][1:])
+        relation_ids = []
         if args.name in self.relations:
-            relation_ids = [self.relations[args.name]["id"]]
-        else:
-            relation_ids = []
+            for relation in self.relations[args.name]:
+                relation_ids.append(relation["id"])
         converter = json.dumps if args.format == "json" else yaml.dump
         value = converter(relation_ids)
         return {"stdout": io.BytesIO(value.encode("utf-8"))}
@@ -97,7 +98,9 @@ class RelationList:
         parser.add_argument("-r", "--relation")
         parser.add_argument("--format", nargs="?", default="yaml")
         args = parser.parse_args(proc_args["args"][1:])
-        for relation in self.relations.values():
+        relation_name = args.relation.rsplit(":", 1)[0]
+        relations = self.relations[relation_name]
+        for relation in relations:
             if relation["id"] == args.relation:
                 break
         else:
@@ -124,7 +127,9 @@ class RelationSet:
             return {"stdout": io.StringIO("--file")}
         with open(args.file, "r") as settings_file:
             settings = yaml.safe_load(settings_file.read())
-        for relation in self.relations.values():
+        relation_name = args.relation.rsplit(":", 1)[0]
+        relations = self.relations[relation_name]
+        for relation in relations:
             if relation["id"] == args.relation:
                 relation["data"].update(settings)
                 break
@@ -147,7 +152,9 @@ class RelationGet:
         parser.add_argument("-r", "--relation")
         parser.add_argument("--format", nargs="?", default="yaml")
         args = parser.parse_args(proc_args["args"][1:])
-        for relation in self.relations.values():
+        relation_name = args.relation.rsplit(":", 1)[0]
+        relations = self.relations[relation_name]
+        for relation in relations:
             if relation["id"] == args.relation:
                 break
         else:
@@ -195,13 +202,14 @@ class JujuReactiveModel:
                 break
         else:
             raise AssertionError("No such relation defined: " + relation_name)
-        relation["id"] = relation_name + ":1"
+        relations = self.relations.setdefault(relation_name, [])
+        relation["id"] = "{}:{}".format(relation_name, len(relations))
         relation["data"] = {}
         relation["units"] = {}
         relation["state"] = "waiting"
         relation["name"] = relation_name
         relation["application"] = application
-        self.relations[relation_name] = relation
+        self.relations.setdefault(relation_name, []).append(relation)
         self._check_relations()
 
     def run_hook(self, name):
@@ -219,21 +227,25 @@ class JujuReactiveModel:
         return False
 
     def _check_relations(self):
-        for relation_name, relation in self.relations.items():
-            if relation["state"] != "waiting":
-                continue
-            if relation["application"] not in self.applications:
-                continue
-            remote_unit = self.applications[relation["application"]][0]
-            if relation.get("scope") == "container":
-                if (self.local_unit["state"] == "deployed" and
-                        remote_unit["state"] == "started"):
-                    self._transition_unit(self.local_unit, "started")
-                    self._transition_relation(relation, "joined", remote_unit)
-            else:
-                if (self.local_unit["state"] == "started" and
-                        remote_unit["state"] == "started"):
-                    self._transition_relation(relation, "joined", remote_unit)
+        relations = itertools.chain(*self.relations.values())
+        for relation_name, relations in self.relations.items():
+            for relation in relations:
+                if relation["state"] != "waiting":
+                    continue
+                if relation["application"] not in self.applications:
+                    continue
+                remote_unit = self.applications[relation["application"]][0]
+                if relation.get("scope") == "container":
+                    if (self.local_unit["state"] == "deployed" and
+                            remote_unit["state"] == "started"):
+                        self._transition_unit(self.local_unit, "started")
+                        self._transition_relation(
+                            relation, "joined", remote_unit)
+                else:
+                    if (self.local_unit["state"] == "started" and
+                            remote_unit["state"] == "started"):
+                        self._transition_relation(
+                            relation, "joined", remote_unit)
 
     def _transition_unit(self, unit, state):
         if state == "started" and unit["state"] == "deployed":
@@ -333,7 +345,7 @@ class FooTest(CharmTest):
         self.fakes.juju.model.start("some-service")
         self.fakes.juju.model.start("prometheus")
 
-        relation = self.fakes.juju.model.relations["prometheus-client"]
+        [relation] = self.fakes.juju.model.relations["prometheus-client"]
         unit_data = self.fakes.juju.model.local_unit["data"]
 
         self.assertEqual("9100", relation["data"]["port"])
@@ -343,3 +355,23 @@ class FooTest(CharmTest):
             unit_data["private-address"], relation["data"]["private-address"])
         self.assertEqual(
             "some-service/0", relation["data"]["principal-unit"])
+
+    def test_relate_prometheus_multiple(self):
+        self.fakes.juju.model.deploy(
+            ["some-service", "prometheus1", "prometheus2"])
+        self.fakes.juju.model.relate("container", "some-service")
+        self.fakes.juju.model.relate("prometheus-client", "prometheus1")
+        self.fakes.juju.model.relate("prometheus-client", "prometheus2")
+
+        self.fakes.juju.model.start("some-service")
+        self.fakes.juju.model.start("prometheus1")
+        self.fakes.juju.model.start("prometheus2")
+
+        relation1, relation2 = self.fakes.juju.model.relations[
+            "prometheus-client"]
+        self.assertEqual("9100", relation1["data"]["port"])
+        self.assertEqual(
+            "some-service/0", relation1["data"]["principal-unit"])
+        self.assertEqual("9100", relation2["data"]["port"])
+        self.assertEqual(
+            "some-service/0", relation2["data"]["principal-unit"])

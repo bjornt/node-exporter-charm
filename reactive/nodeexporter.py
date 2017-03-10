@@ -7,8 +7,7 @@ def prometheus_client(prometheus):
     prometheus.configure(port=9100)
 
     principal_unit = get_principal_unit()
-    for relation_id in hookenv.relation_ids('prometheus-client'):
-        hookenv.relation_set(relation_id, {'principal-unit': principal_unit})
+    prometheus.set_remote(**{'principal-unit': principal_unit})
 
 
 def get_principal_unit():
