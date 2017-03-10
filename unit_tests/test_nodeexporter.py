@@ -118,12 +118,14 @@ class RelationSet:
         self.relations = relations
 
     def __call__(self, proc_args):
-        parser = argparse.ArgumentParser()
+        # Don't add help, since it prints to stdout and raises
+        # SystemExit.
+        parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("-r", "--relation")
         parser.add_argument("--file")
-        try:
-            args = parser.parse_args(proc_args["args"][1:])
-        except SystemExit:
+        parser.add_argument("--help", action="store_true")
+        args = parser.parse_args(proc_args["args"][1:])
+        if args.help:
             return {"stdout": io.StringIO("--file")}
         with open(args.file, "r") as settings_file:
             settings = yaml.safe_load(settings_file.read())
