@@ -167,17 +167,19 @@ class JujuReactiveControl:
         self.unit_name = unit_name
         self.application = unit_name.split("/", 1)[0]
         self.applications = {}
-        self.local_unit = self.deploy(
-            self.application, subordinate=self.meta.get("subordinate", False))
+        self.deploy(
+            [self.application],
+            subordinate=self.meta.get("subordinate", False))
+        self.local_unit = self.applications[self.application][0]
         self.local_unit["data"] = {"private-address": "10.1.2.3"}
         self.relations = {}
 
-    def deploy(self, application, subordinate=False):
-        unit_info = {
-            "state": "deployed", "subordinate": subordinate,
-            "application": application, "name": application + "/0"}
-        self.applications.setdefault(application, []).append(unit_info)
-        return unit_info
+    def deploy(self, applications, subordinate=False):
+        for application in applications:
+            unit_info = {
+                "state": "deployed", "subordinate": subordinate,
+                "application": application, "name": application + "/0"}
+            self.applications.setdefault(application, []).append(unit_info)
 
     def start(self, application):
         unit = self.applications[application][0]
@@ -315,19 +317,22 @@ class FooTest(CharmTest):
         self.fakes.processes.add(self.snap)
 
     def test_install_snap(self):
-        self.fakes.juju.control.deploy("some-service")
+        self.fakes.juju.control.deploy(["some-service"])
         self.fakes.juju.control.relate("container", "some-service")
+
         self.fakes.juju.control.start("some-service")
+
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
 
     def test_relate_prometheus(self):
-        self.fakes.juju.control.deploy("some-service")
+        self.fakes.juju.control.deploy(["some-service", "prometheus"])
         self.fakes.juju.control.relate("container", "some-service")
-        self.fakes.juju.control.start("some-service")
-        self.fakes.juju.control.deploy("prometheus")
-        self.fakes.juju.control.start("prometheus")
         self.fakes.juju.control.relate("prometheus-client", "prometheus")
+
+        self.fakes.juju.control.start("some-service")
+        self.fakes.juju.control.start("prometheus")
+
         relation = self.fakes.juju.control.relations["prometheus-client"]
         unit_data = self.fakes.juju.control.local_unit["data"]
         self.assertEqual("9100", relation["data"]["port"])
