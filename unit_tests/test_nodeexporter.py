@@ -107,7 +107,7 @@ class RelationSet:
                 relation["data"].update(settings)
                 break
         else:
-            raise AssertionError("invalid relation id") 
+            raise AssertionError("invalid relation id")
         return {}
 
 
