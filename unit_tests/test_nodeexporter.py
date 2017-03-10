@@ -335,3 +335,5 @@ class FooTest(CharmTest):
             unit_data["private-address"], relation["data"]["hostname"])
         self.assertEqual(
             unit_data["private-address"], relation["data"]["private-address"])
+        self.assertEqual(
+            "some-service/0", relation["data"]["principal-unit"])
