@@ -1,13 +1,18 @@
-from charms.reactive import (
-    helpers,
-    hook,
-    when,
-    when_not,
-    set_state,
-    remove_state,
-    toggle_state,
-)
+from charms.reactive import when
+from charmhelpers.core import hookenv
+
 
 @when('prometheus-client.available')
 def prometheus_client(prometheus):
     prometheus.configure(port=9100)
+
+    principal_unit = get_principal_unit()
+    for relation_id in hookenv.relation_ids('prometheus-client'):
+        hookenv.relation_set(relation_id, {'principal-unit': principal_unit})
+
+
+def get_principal_unit():
+    '''Return the principal unit for this subordinate.'''
+    for relation_id in hookenv.relation_ids('container'):
+        for relation_data in hookenv.relations_for_id(relation_id):
+            return relation_data['__unit__']
