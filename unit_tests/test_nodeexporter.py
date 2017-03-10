@@ -1,7 +1,8 @@
 import argparse
-import shutil
 import io
+import json
 import os
+import shutil
 import sys
 
 import yaml
@@ -12,6 +13,8 @@ from charms.reactive.helpers import data_changed
 
 from charmhelpers.core import hookenv, unitdata
 from charmtest import CharmTest
+
+from systemfixtures.filesystem import Overlay
 
 
 class Snap:
@@ -41,6 +44,73 @@ class ResourceGet:
         return {"stdout": io.BytesIO(b"")}
 
 
+class UnitGet:
+
+    name = "unit-get"
+
+    def __init__(self, unit_data):
+        self.unit_data = unit_data
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("setting")
+        parser.add_argument("--format", nargs="?", default="yaml")
+        args = parser.parse_args(proc_args["args"][1:])
+        if args.setting not in self.unit_data:
+            error = 'error: unknown setting "{}"'.format(args.setting)
+            return {"error": io.BytesIO(error.encode("utf-8"))}
+        converter = json.dumps if args.format == "json" else yaml.dump
+        value = converter(self.unit_data[args.setting])
+        return {"stdout": io.BytesIO(value.encode("utf-8"))}
+
+
+class RelationIds:
+
+    name = "relation-ids"
+
+    def __init__(self, relations):
+        self.relations = relations
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("name")
+        parser.add_argument("--format", nargs="?", default="yaml")
+        args = parser.parse_args(proc_args["args"][1:])
+        if args.name in self.relations:
+            relation_ids = [self.relations[args.name]["id"]]
+        else:
+            relation_ids = []
+        converter = json.dumps if args.format == "json" else yaml.dump
+        value = converter(relation_ids)
+        return {"stdout": io.BytesIO(value.encode("utf-8"))}
+
+
+class RelationSet:
+
+    name = "relation-set"
+
+    def __init__(self, relations):
+        self.relations = relations
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-r", "--relation")
+        parser.add_argument("--file")
+        try:
+            args = parser.parse_args(proc_args["args"][1:])
+        except SystemExit:
+            return {"stdout": io.StringIO("--file")}
+        with open(args.file, "r") as settings_file:
+            settings = yaml.safe_load(settings_file.read())
+        for relation in self.relations.values():
+            if relation["id"] == args.relation:
+                relation["data"].update(settings)
+                break
+        else:
+            raise AssertionError("invalid relation id") 
+        return {}
+
+
 class JujuReactiveControl:
 
     def __init__(self, charm_dir, unit_name):
@@ -51,6 +121,7 @@ class JujuReactiveControl:
         self.applications = {}
         self.local_unit = self.deploy(
             self.application, subordinate=self.meta.get("subordinate", False))
+        self.local_unit["data"] = {"private-address": "10.1.2.3"}
         self.relations = {}
 
     def deploy(self, application, subordinate=False):
@@ -74,6 +145,8 @@ class JujuReactiveControl:
                 break
         else:
             raise AssertionError("No such relation defined: " + relation_name)
+        relation["id"] = relation_name + ":1"
+        relation["data"] = {}
         relation["state"] = "waiting"
         relation["name"] = relation_name
         relation["application"] = application
@@ -82,7 +155,17 @@ class JujuReactiveControl:
 
     def run_hook(self, name):
         os.environ["JUJU_HOOK_NAME"] = name
+        if self._is_relation_hook(name):
+            os.environ["JUJU_RELATION"] = name.rsplit("-", 2)[0]
         charms.reactive.main()
+        if self._is_relation_hook(name):
+            del os.environ["JUJU_RELATION"]
+
+    def _is_relation_hook(self, hook_name):
+        for suffix in ["joined", "changed", "departed", "broken"]:
+            if hook_name.endswith("-relation-" + suffix):
+                return True
+        return False
 
     def _check_relations(self):
         for relation_name, relation in self.relations.items():
@@ -96,8 +179,10 @@ class JujuReactiveControl:
                         remote_unit["state"] == "started"):
                     self._transition_unit(self.local_unit, "started")
                     self._transition_relation(relation, "joined")
-                    self.run_hook(relation_name + "-joined")
-                    self.run_hook(relation_name + "-changed")
+            else:
+                if (self.local_unit["state"] == "started" and
+                        remote_unit["state"] == "started"):
+                    self._transition_relation(relation, "joined")
 
     def _transition_unit(self, unit, state):
         if state == "started" and unit["state"] == "deployed":
@@ -109,8 +194,9 @@ class JujuReactiveControl:
 
     def _transition_relation(self, relation, state):
         if state == "joined" and relation["state"] == "waiting":
-            self.run_hook(relation["name"] + "-joined")
-            self.run_hook(relation["name"] + "-changed")
+            self.run_hook(relation["name"] + "-relation-joined")
+            self.run_hook(relation["name"] + "-relation-changed")
+            relation["state"] = "joined"
 
 
 class FooTest(CharmTest):
@@ -140,6 +226,12 @@ class FooTest(CharmTest):
         self.fakes.juju.control = JujuReactiveControl(
             os.environ["CHARM_DIR"], os.environ["JUJU_UNIT_NAME"])
         self.addCleanup(self._clean_up_unitdata)
+        unit_get = UnitGet(self.fakes.juju.control.local_unit["data"])
+        self.fakes.processes.add(unit_get)
+        relation_ids = RelationIds(self.fakes.juju.control.relations)
+        self.fakes.processes.add(relation_ids)
+        relation_set = RelationSet(self.fakes.juju.control.relations)
+        self.fakes.processes.add(relation_set)
 
     def _init_reactive(self):
         self.loaded_modules = set(sys.modules.keys())
@@ -147,13 +239,20 @@ class FooTest(CharmTest):
         code_dir = os.getcwd()
         charm_dir = hookenv.charm_dir()
         shutil.copytree(
-            os.path.join(code_dir, "reactive"), 
+            os.path.join(code_dir, "reactive"),
             os.path.join(
                 self.fakes.fs.root.path, charm_dir.lstrip("/"), "reactive"))
+        shutil.copytree(
+            os.path.join(code_dir, "hooks"),
+            os.path.join(
+                self.fakes.fs.root.path, charm_dir.lstrip("/"), "hooks"))
         for sub_path in ["layer.yaml"]:
             source = os.path.join(code_dir, sub_path)
             target = os.path.join(charm_dir, sub_path)
             os.symlink(source, target)
+        self.useFixture(Overlay(
+            "charms.reactive.relations._load_module", self.fakes.fs._generic,
+            self.fakes.fs._is_fake_path))
 
     def _init_snap_layer(self):
         hookenv.config()["snap_proxy"] = ""
@@ -167,3 +266,18 @@ class FooTest(CharmTest):
         self.fakes.juju.control.start("some-service")
         self.assertEqual(
             ["bjornt-prometheus-node-exporter"], list(self.snap.snaps.keys()))
+
+    def test_relate_prometheus(self):
+        self.fakes.juju.control.deploy("some-service")
+        self.fakes.juju.control.relate("container", "some-service")
+        self.fakes.juju.control.start("some-service")
+        self.fakes.juju.control.deploy("prometheus")
+        self.fakes.juju.control.start("prometheus")
+        self.fakes.juju.control.relate("prometheus-client", "prometheus")
+        relation = self.fakes.juju.control.relations["prometheus-client"]
+        unit_data = self.fakes.juju.control.local_unit["data"]
+        self.assertEqual("9100", relation["data"]["port"])
+        self.assertEqual(
+            unit_data["private-address"], relation["data"]["hostname"])
+        self.assertEqual(
+            unit_data["private-address"], relation["data"]["private-address"])
