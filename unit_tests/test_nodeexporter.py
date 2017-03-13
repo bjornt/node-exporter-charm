@@ -130,7 +130,7 @@ class RelationSet:
             # FakeProcess doesn't respect universal_newlines, we have to
             # return a string, since that's what charmhelpers expect.
             # https://github.com/testing-cabal/fixtures/issues/37
-            return {"stdout": io.StringIO(b"--file")}
+            return {"stdout": io.StringIO("--file")}
         with open(args.file, "r") as settings_file:
             settings = yaml.safe_load(settings_file.read())
         relation_name = args.relation.rsplit(":", 1)[0]
@@ -173,11 +173,66 @@ class RelationGet:
 
 
 class JujuReactiveModel:
+    """Simulate a Juju model for a reactive charm.
 
-    def __init__(self, charm_dir, unit_name):
+    The application under test will be deployed after model creation.
+    After that You can deploy and relate other applications like you
+    would with a normal Juju model. A state machine keeps track on when
+    the different hooks would be fired.
+
+    For example:
+
+        >>> os.environ["JUJU_UNIT_NAME"] = "wordpress/0"
+        >>> model = JujuRectiveModel()
+        >>> model.deploy(["mysql", "haproxy"])
+        >>> model.relate("db", "mysql")
+        >>> model.relate("website", "haproxy")
+
+        >>> model.start("wordpress") # Runs install hook
+        >>> model.start("haproxy")  # Runs website-relation-{joined,changed}
+        >>> model.start("mysql")  # Runs db-relation-{joined,changed} hooks
+
+    The deploy() and relate() sets up the model, but no hooks will be
+    called, since no applications are running yet. The interesting part
+    comes when you start the different applications. When the
+    application under test is started, its install hook will fire. Then
+    as you start the applications that have relations, their relations
+    joined/changed hooks will fire.
+
+    This gives you control over the hook ordering, so you can test what
+    happens if haproxy starts before mysql or vice versa.
+
+    The hooks are run using charms.reactive.main(), just like its done
+    if you use the reactive framework in your charm.
+
+    If you're testing a subordinate charm, it's worth noting that you
+    can't start a subordinate application directly. You have to relate
+    it to a principal application, which you can start. Example:
+
+        >>> os.environ["JUJU_UNIT_NAME"] = "nrpe/0"
+        >>> model = JujuRectiveModel()
+        >>> model.deploy(["mysql"])
+        >>> model.relate("general-info", "mysql")
+
+        >>> model.start("mysql")
+
+    When mysql is started, the nrpe install hook will fire, as well as
+    the general-info-relation-{joined,changed} hooks.
+
+    Only one unit per application is supported.
+
+    @ivar unit_name: The name of the Juju unit under test.
+    @ivar application: The name of the Juju application the unit under
+        test is part of.
+    @ivar local_unit: The state of the unit under test.
+    @ivar relations: The state of the relations for the unit under test.
+    """
+
+    def __init__(self, unit_name):
+        charm_dir = hookenv.charm_dir()
         with open(os.path.join(charm_dir, "metadata.yaml"), "r") as meta_file:
             self.meta = yaml.safe_load(meta_file.read())
-        self.unit_name = unit_name
+        self.unit_name = hookenv.local_unit()
         self.application = unit_name.split("/", 1)[0]
         self.applications = {}
         self.deploy(
@@ -188,6 +243,14 @@ class JujuReactiveModel:
         self.relations = {}
 
     def deploy(self, applications, subordinate=False):
+        """Deploy one unit each of the given applications.
+
+        The unit won't be started. They have to be started explicitly
+        using start().
+
+        @param applications: List of application names that should be deployed.
+        @param subordinate: Whether the application is a subordinate.
+        """
         for application in applications:
             unit_info = {
                 "state": "deployed", "subordinate": subordinate,
@@ -195,12 +258,31 @@ class JujuReactiveModel:
             self.applications.setdefault(application, []).append(unit_info)
 
     def start(self, application):
+        """Start the application.
+
+        The unit that was deployed for the given application will be
+        marked as started. Any install or relation hooks that needs be
+        fired as a consequence will be fired.
+
+        If the application is a subordinate, it can't be started
+        explicitly. It has to be related to a started principal
+        application instead.
+
+        @param application: The name of the application that should be
+            started.
+        """
         unit = self.applications[application][0]
         assert not unit["subordinate"], (
             "Can't manually start subordinate units.")
         self._transition_unit(unit, "started")
 
     def relate(self, relation_name, application):
+        """Relate the application under test to another application.
+
+        @param relation_name: The name of the relation as specified in
+            metadata.yaml.
+        @param application: The name of the application to relate to.
+        """
         for relation_type in ["provides", "requires"]:
             defined_relations = self.meta.get(relation_type, {})
             if relation_name in defined_relations:
@@ -219,20 +301,50 @@ class JujuReactiveModel:
         self._check_relations()
 
     def run_hook(self, name):
+        """Run the given hook for the unit under test.
+
+        The reactive framework will be used to execute the hook.
+
+        The JUJU_HOOK_NAME and JUJU_RELATION environment variables will
+        be set during the hook executing.
+
+        @param name: The name of the hook to execute.
+        """
         os.environ["JUJU_HOOK_NAME"] = name
         if self._is_relation_hook(name):
             os.environ["JUJU_RELATION"] = name.rsplit("-", 2)[0]
         charms.reactive.main()
+        # XXX: Instead of deleting the environment variables, we should
+        #      reset them to their original values.
         if self._is_relation_hook(name):
             del os.environ["JUJU_RELATION"]
+        del os.environ["JUJU_HOOK_NAME"]
 
     def _is_relation_hook(self, hook_name):
+        """Return whether the hook is a relation hook.
+
+        @param hook_name: The name of the hook.
+        """
         for suffix in ["joined", "changed", "departed", "broken"]:
             if hook_name.endswith("-relation-" + suffix):
                 return True
         return False
 
     def _check_relations(self):
+        """Check if any relations should be established.
+
+        For principal applications, both applications that are related
+        need to started for the relations to be joined and the relation
+        hooks to be fired.
+
+        For subordinate applications, only the non-subordinate
+        application need to be started for the container relations to be
+        joined.  The subordinate application will be started implicitly
+        before the relation is marked as joind and the relation hooks
+        are fired.
+
+        Relations that are already joined are ignored.
+        """
         relations = itertools.chain(*self.relations.values())
         for relation_name, relations in self.relations.items():
             for relation in relations:
@@ -254,6 +366,11 @@ class JujuReactiveModel:
                             relation, "joined", remote_unit)
 
     def _transition_unit(self, unit, state):
+        """Transition a unit to the given state.
+
+        Any install or relation hooks that need to be fired as a
+        consequence of the state transition will be fired.
+        """
         if state == "started" and unit["state"] == "deployed":
             if unit["application"] == self.application:
                 self.run_hook("install")
@@ -262,6 +379,11 @@ class JujuReactiveModel:
         self._check_relations()
 
     def _transition_relation(self, relation, state, remote_unit):
+        """Transition a relation to the given state.
+
+        Any relation hooks that need to be fired as a consequence of the
+        state transition will be fired.
+        """
         if state == "joined" and relation["state"] == "waiting":
             self.run_hook(relation["name"] + "-relation-joined")
             self.run_hook(relation["name"] + "-relation-changed")
@@ -296,8 +418,7 @@ class FooTest(CharmTest):
         self.resource_get = ResourceGet()
         self.fakes.processes.add(self.resource_get)
 
-        self.fakes.juju.model = JujuReactiveModel(
-            os.environ["CHARM_DIR"], os.environ["JUJU_UNIT_NAME"])
+        self.fakes.juju.model = JujuReactiveModel(os.environ["JUJU_UNIT_NAME"])
         self.addCleanup(self._clean_up_unitdata)
         unit_get = UnitGet(self.fakes.juju.model.local_unit["data"])
         self.fakes.processes.add(unit_get)
