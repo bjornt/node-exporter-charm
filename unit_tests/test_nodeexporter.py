@@ -331,10 +331,14 @@ class FooTest(CharmTest):
             self.fakes.fs._is_fake_path))
 
     def _init_snap_layer(self):
-        hookenv.config()["snap_proxy"] = ""
-        data_changed("snap.proxy", "")
+        """Add a snap binary, which the snap layer needs."""
         self.snap = Snap()
         self.fakes.processes.add(self.snap)
+        # The snap layer reloads snapd when proxy settings have change.
+        # Make it believe that the proxy is unset and hasn't changed, so
+        # that we don't have to mock out the snapd restart.
+        hookenv.config()["snap_proxy"] = ""
+        data_changed("snap.proxy", "")
 
     def test_install_snap(self):
         self.fakes.juju.model.deploy(["mysql"])
