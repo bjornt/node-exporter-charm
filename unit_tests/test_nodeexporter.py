@@ -277,6 +277,9 @@ class FooTest(CharmTest):
         unitdata.kv().close
         unitdata._KV = None
         delattr(charms.reactive, "_snap_registered")
+        new_modules = set(sys.modules.keys()) - self.loaded_modules
+        for module_name in new_modules:
+            del sys.modules[module_name]
 
     def _init_fake_juju(self):
         tools_dir = "/var/lib/juju/tools/machine-0"
@@ -320,6 +323,9 @@ class FooTest(CharmTest):
             source = os.path.join(code_dir, sub_path)
             target = os.path.join(charm_dir, sub_path)
             os.symlink(source, target)
+        # We need to change the path passed to _load_module, so that
+        # each test will be able to re-import the relation interfaces
+        # they need.
         self.useFixture(Overlay(
             "charms.reactive.relations._load_module", self.fakes.fs._generic,
             self.fakes.fs._is_fake_path))
