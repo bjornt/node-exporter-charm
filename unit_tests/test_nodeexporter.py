@@ -126,7 +126,11 @@ class RelationSet:
         parser.add_argument("--help", action="store_true")
         args = parser.parse_args(proc_args["args"][1:])
         if args.help:
-            return {"stdout": io.StringIO("--file")}
+            # We should return BytesIO here, but since fixture's
+            # FakeProcess doesn't respect universal_newlines, we have to
+            # return a string, since that's what charmhelpers expect.
+            # https://github.com/testing-cabal/fixtures/issues/37
+            return {"stdout": io.StringIO(b"--file")}
         with open(args.file, "r") as settings_file:
             settings = yaml.safe_load(settings_file.read())
         relation_name = args.relation.rsplit(":", 1)[0]
