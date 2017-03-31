@@ -18,6 +18,27 @@ from charmtest import CharmTest
 from systemfixtures.filesystem import Overlay
 
 
+class Apt:
+
+    name = "apt"
+
+    def __init__(self):
+        self.installs = []
+
+    def __call__(self, proc_args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command")
+        parser.add_argument("package_name")
+        non_flag_args = [
+            arg for arg in proc_args["args"][1:] if not arg.startswith("-")]
+        args = parser.parse_args(non_flag_args)
+        if args.command == "install":
+            self.installs.append(args.package_name)
+        else:
+            raise AssertionError("Command not implemented: " + args.command)
+        return {}
+
+
 class Snap:
 
     name = "snap"
@@ -459,6 +480,8 @@ class FooTest(CharmTest):
         """Add a snap binary, which the snap layer needs."""
         self.snap = Snap()
         self.fakes.processes.add(self.snap)
+        self.apt = Apt()
+        self.fakes.processes.add(self.apt)
         # The snap layer reloads snapd when proxy settings have change.
         # Make it believe that the proxy is unset and hasn't changed, so
         # that we don't have to mock out the snapd restart.
